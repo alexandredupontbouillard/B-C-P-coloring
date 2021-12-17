@@ -1,0 +1,282 @@
+#include "Constraint.h"
+
+#include "ChvatalGomorySep.h"
+
+#define DELTA 0.01
+
+#define eps 1e-5
+
+
+
+
+
+void ChvatalGomorySep::create_MIP(){
+
+  cout<<"**************************** INIT CPLEX *******************"<<endl;
+
+  model= IloModel(env);
+
+  nbIt = 0;
+
+  
+  u = IloNumVarArray(env, nb_nodes, 0.0, 1-0.0001  , ILOFLOAT);
+  //big_u = IloNumVarArray(env, nb_nodes, 0, 100000  , ILOINT);
+  alpha_0 = IloNumVar(env, 0.0, nb_nodes , ILOINT);
+  alpha_0.setName("alpha_0");
+  f_0= IloNumVar(env, 0.0, 1.0-DELTA, ILOFLOAT);
+  f_0.setName("f_0");
+  f = IloNumVarArray(env,0);
+  alpha = IloNumVarArray(env,0);
+
+
+
+  IloRangeArray CC(env);
+
+
+
+  IloExpr cst(env);
+  for (int  i =0; i <nb_nodes;i++){
+      cst+= u[i];
+    ostringstream varname;
+ 
+    varname.str("");
+    varname<<"u_"<<i;
+    u[i].setName(varname.str().c_str());
+
+    //IloExpr cst2(env);
+    //cst2+= 100000* u[i]- big_u[i];
+    //CC.add(cst2==0);
+    
+  }
+  cst+= f_0 - alpha_0;
+  CC.add(cst==0);
+
+  model.add(CC);
+
+
+  obj = IloAdd(model, IloMaximize(env, 0.0));
+
+
+ obj.setLinearCoef(alpha_0,1);
+
+
+  cplex = IloCplex(model);
+  cplex.setParam(IloCplex::Param::MIP::Limits::Nodes, 1000);
+  	
+     cplex.setOut(env.getNullStream());
+     cplex.setWarning(env.getNullStream());
+
+	 cout<<"**************************** FIN INIT CPLEX *********************"<<endl;
+
+
+}
+	
+
+int ChvatalGomorySep::makeConstraint(  SCIP* scip,SCIP_RESULT* result,SCIP_SEPA* sepa){
+	SCIP_Real sum_u = 0;
+	vector<SCIP_Real>* newct = new vector<SCIP_Real>();
+	newct->resize(nb_nodes);
+	SCIP_Real c;
+	
+	for(int k = 0 ; k < nb_nodes; k ++){
+		//c = cplex.getValue(u[k]);
+		c = arrondis(cplex.getValue(u[k]));
+		//cout<<k << " "<<cplex.getValue(u[k])<<" "<<c<<endl;
+	
+	
+		sum_u += c;
+		(*newct)[k]=c;
+		
+
+	}
+	int rhss = arrondiSup(sum_u);
+	//cout<<"second membre : "<<rhss<<endl;
+
+
+	SCIP_ROW* row;
+    	SCIP_CALL( SCIPcreateEmptyRowSepa(scip, &row, sepa, "ChvatalGomory",rhss, SCIPinfinity(scip) , FALSE, TRUE, TRUE) );
+
+    	SCIP_CALL( SCIPcacheRowExtensions(scip, row) );
+	
+	list<C_master_var*>::iterator ite;
+	list<int>::iterator stabit; 
+	
+	
+	for(ite = master->L_var.begin(); ite != master->L_var.end(); ite++){  
+		sum_u = 0; 
+
+
+		for(stabit = (*ite)->stable->L_nodes.begin();stabit != (*ite)->stable->L_nodes.end(); stabit++ ){
+			sum_u =sum_u + (*newct)[(*stabit)];
+		  
+		}
+
+
+		SCIP_CALL( SCIPaddVarToRow(scip, row,  (*ite)->ptr, arrondiSup(sum_u)) );
+		
+		
+
+		
+
+	}
+
+
+
+	SCIP_CALL( SCIPflushRowExtensions(scip, row) );
+					
+	if( SCIPisCutEfficacious(scip, NULL, row) ) //|| objvalue >= 0.5)
+	{
+		master->_data.nbChvatal++;
+		unsigned int b;
+		if( SCIPaddCut(scip, NULL, row, TRUE,&b) ){
+
+			
+			*result = SCIP_SEPARATED;
+			rhs->push_back(rhss);
+			chvatalG->push_back(row);
+			master->additional_ineq.push_back(row);
+			
+			//SCIPaddPoolCut(scip,row);
+			ChvatalGomoryCst* newcst = new ChvatalGomoryCst(newct,nb_nodes);
+			master->ctn.push_back(newcst);
+		}
+	}
+	else{
+
+
+		master->separatingPhase = 1;
+	}
+		
+	return 1;
+
+
+}
+
+
+SCIP_RETCODE ChvatalGomorySep::separ_Contrainte(
+		      SCIP*              scip,               /**< SCIP data structure */
+		      SCIP_RESULT*       result,            /**< pointer to store the result of the separation call */
+		      SCIP_SEPA* sepa
+		      ){
+	master->_data.objvalue.push_back( SCIPgetDualbound(scip));
+	master->_data.sep.push_back(master->separatingPhase);
+	master->_data.dualValue.push_back(0);
+	*result =SCIP_DIDNOTFIND ;
+	//cout<<"separation \n \n \n "<<endl;
+	vector<SCIP_Real> coeff; // récupérer les coefficients des stables de la solution
+	int nb_stables =master->L_var.size(); 
+	coeff.resize(nb_stables);
+
+	list<C_master_var*>::iterator it;  // on récupère les valeurs des variables et les stables en base 
+	int i = 0;
+	
+	IloRangeArray CC(env);
+	
+	for(it = master->L_var.begin(); it != master->L_var.end(); it++){
+		
+		coeff[i]=SCIPgetSolVal(scip, NULL, (*it)->ptr);		
+		
+		if(i >= nbColumnAtLastIteration){   // we have to create new variables associated to new stables and their associated constraints			
+			f.add(IloNumVar(env, 0.0, 1.0- DELTA, ILOFLOAT));
+	 		alpha.add(IloNumVar(env, 0.0, nb_nodes, ILOINT));
+			ostringstream varname;
+    			varname.str("");
+    			varname<<"f_"<<i+1;
+		        f[i].setName(varname.str().c_str());
+			
+    			varname.str("");
+    			varname<<"alpha_"<<i+1;
+		        alpha[i].setName(varname.str().c_str());
+			
+			IloExpr cst(env);
+			
+			cst+= f[i]-alpha[i];
+			//cst+= -alpha[i];
+			for(int j = 0 ; j < nb_nodes ; j++){
+				if((*it)->stable->contains(j)){
+
+					cst+=  u[j];
+				}
+
+			}
+			CC.add(cst==0);
+	
+
+		}
+
+
+
+		obj.setLinearCoef(alpha[i],- arrondiS(coeff[i])); // on met à jour la nouvelle fonction objectif
+
+
+		i++;
+	}
+	nbColumnAtLastIteration =master->L_var.size();
+	
+	model.add(CC);
+	// il faudrait ajouter la contrainte de borne
+	if ( !cplex.solve() ) {
+    		
+		cout<<"seems like model is infeasible"<<endl;
+		return SCIP_OKAY;
+  	}
+	
+	//ostringstream filename;
+    	//filename.str("");
+    	//filename<<"../debug/sep"<<nbIt<<".lp"<<"";
+	//nbIt++;
+
+	
+	//double yo;
+
+	double objvalue=cplex.getObjValue();	
+
+	list<C_master_var*>::iterator ite;
+	list<int>::iterator stabit; 
+	SCIP_Real c;
+	if(objvalue >=0.1  ){
+
+		makeConstraint(scip, result,sepa);
+	}
+	else{
+		master->separatingPhase = 1;
+
+	}
+
+	master->separatingPhase =1;
+
+	
+	return SCIP_OKAY;
+
+}
+
+
+
+SCIP_RETCODE ChvatalGomorySep::scip_execlp(SCIP* scip, SCIP_SEPA* sepa, SCIP_RESULT* result, unsigned int i){
+	 *result = SCIP_DIDNOTFIND;
+	
+	auto start = chrono::steady_clock::now();
+	//cout<<"\n***************début séparation de chvatal*************\n "<<endl;
+	SCIP_CALL( separ_Contrainte(scip,result,sepa));
+	//cout<<"\n***************fin séparation de chvatal*************** \n" << endl;
+	auto end = chrono::steady_clock::now();
+
+	
+
+	master->_data.separationTime += chrono::duration_cast<chrono::seconds>(end - start).count();
+	return SCIP_OKAY;
+}
+SCIP_RETCODE ChvatalGomorySep::scip_execsol(SCIP* scip, SCIP_SEPA* sepa, SCIP_RESULT* result, unsigned int i){
+
+	 *result = SCIP_DIDNOTFIND;
+	//cout<<"\n***************début séparation de chvatal*************\n "<<endl;
+	SCIP_CALL( separ_Contrainte(scip,result,sepa));
+	//cout<<"\n***************fin séparation de chvatal*************** \n" << endl;
+	return SCIP_OKAY;
+}
+SCIP_RETCODE ChvatalGomorySep::scip_init(SCIP* scip,SCIP_SEPA* sepa){
+	
+	create_MIP();
+
+	return SCIP_OKAY;
+}

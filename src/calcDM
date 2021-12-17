@@ -1,0 +1,9 @@
+#!/bin/bash
+input="../instances_minute.txt"
+
+while IFS= read -r line
+do
+	
+	./calculer_degre_max ../test/$line 
+	
+done < "$input"

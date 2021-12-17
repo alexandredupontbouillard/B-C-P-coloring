@@ -1,0 +1,150 @@
+#include "Find_Stable_set_with_Cplex.h"
+
+using namespace std;
+
+#define eps 1e-6
+
+#define CPLEX_LOG  //Si non commente, affiche des logs
+
+
+
+
+void Cplex_pricing_algo::create_MIP(C_Graph *GG){
+
+  G=GG;
+  
+  model= IloModel(env);
+
+
+  ////////////////////////
+  //////  VAR
+  ////////////////////////
+
+  int i,k;
+  
+  //x = new IloNumVarArray(*env, G->nb_nodes, 0.0, 1.0, ILOINT);
+  x = IloNumVarArray(env, G->nb_nodes, 0.0, 1.0, ILOINT);
+  for(i = 0; i < G->nb_nodes; i++) {
+    ostringstream varname;
+    IloNumVar v(env, 0.0, 1.0, ILOINT);
+    varname.str("");
+    varname<<"x_"<<i;
+    x[i].setName(varname.str().c_str());
+
+    
+  }
+
+  //////////////
+  //////  EDGE INEQUALITIES
+  //////////////
+
+  IloRangeArray CC(env);
+  int nbcst=0;
+
+  // Cst x_i + x_j \le 1 for every edges ij in E
+
+  for (k=0;k<G->nb_links;k++){
+      IloExpr cst(env);
+      cst+=x[G->V_links[k]->v1]+x[G->V_links[k]->v2];
+      CC.add(cst<=1);
+      ostringstream cstname;
+      cstname.str("");
+      cstname<<"CEdge_"<<G->V_links[k]->v1<<"_"<<G->V_links[k]->v2;
+      CC[nbcst].setName(cstname.str().c_str());
+      nbcst++;
+  }
+  
+  
+  model.add(CC);
+
+
+  //////////////
+  ////// OBJ
+  //////////////
+
+
+  // Initialization without any value
+  obj = IloAdd(model, IloMaximize(env, 0.0));
+  
+
+   //////////////
+  ////// CPLEX 
+  //////////////
+
+  
+  cplex = IloCplex(model);
+
+  #ifndef CPLEX_LOG
+     cplex.setOut(env.getNullStream());
+     cplex.setWarning(env.getNullStream());
+   #endif
+}
+
+
+void Cplex_pricing_algo::set_objective_coefficient(const vector<double>& obj_coeff){
+ int i;
+
+  for (i=0;i<G->nb_nodes;i++)
+    obj.setLinearCoef(x[i],obj_coeff[i]);
+
+}
+
+
+// return true if a stable set have been found by Cplex
+bool  Cplex_pricing_algo::find_stableset(list<int>& stable, double &objvalue) {
+  list<int>::const_iterator it;
+   int i;
+
+  #ifdef CPLEX_OUTPUT
+  cout<<endl<<" ************************* LAUCH PRICER with CPLEX"<<endl<<endl;
+  aff_forbidden_stable_set();
+  #endif
+ 
+	  
+  #ifdef CPLEX_OUTPUT
+  cplex.exportModel("sortie.lp");
+  #endif
+  
+  if ( !cplex.solve() ) {
+    env.error() << "Failed to optimize Pricer with Cplex" << endl;
+    exit(1);
+  }
+
+  if (cplex.getStatus()==CPX_STAT_INFEASIBLE){
+    #ifdef CPLEX_OUTPUT
+    cout<<"NO SOLUTION BECAUSE INFEASIBILITY ---- OUCH Cela semble ne devoir jamais se produire----"<<endl;
+    cout<<endl<<" ************************* END PRICER with CPLEX"<<endl<<endl;
+    #endif
+    
+    return false;
+  }
+  else{
+    
+    stable.clear();
+
+    objvalue=cplex.getObjValue();
+    
+    for(i=0;i<G->nb_nodes;i++){
+      if (cplex.getValue(x[i])>1-eps)
+	stable.push_back(i);
+    }
+
+
+    #ifdef CPLEX_OUTPUT
+    cout<<"Produced column : ";
+    for (it=stable.begin();it!=stable.end();it++)
+      cout<<*it<<" ";
+    cout<<endl;
+    cout<<"Objective value : "<<objvalue<<endl;
+    cout<<"NEW STABLE";
+    cout<<endl<<" ************************* END PRICER with CPLEX"<<endl<<endl;     
+    #endif
+      
+    return true;
+
+  }
+  
+
+}
+
+
