@@ -5,4 +5,4 @@ The pricing class used is : "SCIP_pricer_alternate"
 
 The separation class used is : "ChvatalG_M_A_sep"
 
-note that separation and pricing are both solving a MILP.
+note that separation and pricing are both done by solving a MILP.
